@@ -5,10 +5,10 @@ import android.util.AttributeSet
 import android.view.TextureView
 
 
-// TODO -- 2017/11/29 -- Fix this?
-class AutofitTextureVew(c: Context) : TextureView(c) {
-    constructor(c: Context, attrs: AttributeSet) : this(c)
-    constructor(c: Context, attrs: AttributeSet, defStyle: Int) : this(c, attrs)
+class AutofitTextureVew : TextureView {
+    constructor(c: Context) : super(c)
+    constructor(c: Context, attrs: AttributeSet) : super(c, attrs)
+    constructor(c: Context, attrs: AttributeSet, defStyle: Int) : super(c, attrs, defStyle)
 
     var ratioWidth = 0
     var ratioHeight = 0

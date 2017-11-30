@@ -8,13 +8,13 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.media.Image
 import android.media.ImageReader
-import android.support.v7.app.AppCompatActivity
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.support.v4.app.ActivityCompat
 import android.support.v4.content.ContextCompat
+import android.support.v7.app.AppCompatActivity
 import android.util.Log
 import android.util.Size
 import android.util.SparseIntArray
@@ -48,14 +48,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        textureView = findViewById(R.id.cam_display)
         initTextureView()
 
-/*        if (checkPermissions()) {
+        if (checkPermissions()) {
             initOrientations()
         } else {
             requestPermissions()
-        }*/
+        }
 
 /*        // Example of a call to a native method
         sample_text.text = stringFromJNI()*/
@@ -85,7 +84,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
 
     override fun onSurfaceTextureAvailable(p0: SurfaceTexture?, p1: Int, p2: Int) {
-        debugLog(TAG, "SurfaceTextureAvailable")
+        openCamera()
     }
 
     override fun onSurfaceTextureSizeChanged(p0: SurfaceTexture?, p1: Int, p2: Int) {
@@ -115,6 +114,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
 
     private fun initTextureView() {
+        textureView = findViewById(R.id.cam_display)
         textureView.surfaceTextureListener = this
     }
 
@@ -261,7 +261,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun openCamera() {
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         try {
-            cameraId = mgr.cameraIdList[0]
+            cameraId = mgr.cameraIdList[2]
             debugLog(TAG, "There are ${mgr.cameraIdList.size} cameras.")
             val chars: CameraCharacteristics? = mgr.getCameraCharacteristics(cameraId)
             val configMap = chars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
