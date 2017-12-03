@@ -28,7 +28,7 @@ class AutofitTextureVew : TextureView {
         }
     }
 
-    private fun setAspectRatio(w: Int, h: Int) {
+    fun setAspectRatio(w: Int, h: Int) {
         if (w < 0 || h < 0) throw IllegalArgumentException("Dimension cannot be less than 0")
 
         ratioWidth = w

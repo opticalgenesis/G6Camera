@@ -1,14 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <android.support.constraint.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context="com.opticalgenesis.jfelt.g6camera.MainActivity">
 
     <com.opticalgenesis.jfelt.g6camera.AutofitTextureVew
+        android:id="@+id/camera_preview"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:id="@+id/cam_display"/>
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        tools:layout_editor_absoluteX="103dp"
+        tools:layout_editor_absoluteY="231dp">
+
+        <Button
+            android:id="@+id/debug_cam_switch_front"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="front" />
+
+        <Button
+            android:id="@+id/debug_cam_switch_rear"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="rear" />
+
+        <Button
+            android:id="@+id/debug_cam_switch_rear_wide"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="rear_wide" />
+    </LinearLayout>
 
 </android.support.constraint.ConstraintLayout>
