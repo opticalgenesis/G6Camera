@@ -25,7 +25,6 @@ import android.widget.Button
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.OutputStream
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -36,7 +35,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     private val permissionRequestCode = 420
     private val storageRequestCode = 350
 
-    private lateinit var file: File
+    private var file = File("${Environment.getExternalStorageDirectory()}/pic.jpg")
     private lateinit var imageSize: Size
 
     private var mCameraCaptureSession: CameraCaptureSession? = null
@@ -55,6 +54,41 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     private var isInManualFocus = false
 
     private val cameraOpenCloseLock = Semaphore(1)
+
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
+            super.onCaptureProgressed(session, request, partialResult)
+            process(partialResult)
+        }
+
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            super.onCaptureCompleted(session, request, result)
+            process(result)
+        }
+
+        private fun process(res: CaptureResult) {
+            when (state) {
+                STATE_PREVIEW -> return
+                STATE_WAITING_LOCK -> capturePicture(res)
+                STATE_WAITING_PRECAPTURE -> state = STATE_WAITING_NON_PRECAPTURE
+                STATE_WAITING_NON_PRECAPTURE -> {
+                    state = STATE_PICTURE_TAKEN; takePicture()
+                }
+            }
+        }
+
+        private fun capturePicture(res: CaptureResult) {
+            val afState = res[CaptureResult.CONTROL_AF_STATE]
+            if (afState == null) {
+                takePicture()
+            } else if (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) {
+                state = MainActivity.STATE_PICTURE_TAKEN
+                takePicture()
+            } else {
+                runPrecapture()
+            }
+        }
+    }
 
     companion object {
         val TAG: String = MainActivity::class.java.simpleName
@@ -188,6 +222,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             }
         }
     }
+
 /*
     override fun onTouch(v: View, event: MotionEvent): Boolean {
         debugLog(TAG, "ViewTouched")
@@ -280,10 +315,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     }
 
     private fun checkPermissions() =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(this, Manifest.permission_group.STORAGE) == PackageManager.PERMISSION_GRANTED
 
-    private fun requestPermissions() =
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission_group.STORAGE), storageRequestCode)
+    }
 
     /*
         TODO -- 2017/12/03
@@ -306,6 +343,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         frontCamButton.setOnClickListener(this)
         rearCamButton.setOnClickListener(this)
         rearWideCamButton.setOnClickListener(this)
+
+        frontCamButton.setOnLongClickListener({ takePicture(); true })
+        rearCamButton.setOnLongClickListener({ takePicture(); true })
+        rearWideCamButton.setOnLongClickListener({ takePicture(); true })
     }
 
     private fun initBackgroundThread() {
@@ -326,82 +367,32 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     }
 
     private fun takePicture() {
-        if (cameraDevice == null) {
-            Log.e(TAG, "CameraDevice == null")
-            return
-        }
-        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         try {
-            val chars: CameraCharacteristics? = mgr.getCameraCharacteristics(cameraDevice!!.id)
-            var jpegSizes: Array<Size>? = null
-            if (chars != null) {
-                jpegSizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).getOutputSizes(ImageFormat.JPEG)
-            }
-
-            var w = 640
-            var h = 480
-
-            if (jpegSizes != null && jpegSizes.isNotEmpty()) {
-                w = jpegSizes[0].width
-                h = jpegSizes[0].height
-            }
-
-            val rdr = ImageReader.newInstance(w, h, ImageFormat.JPEG, 1)
-            val outputSurfaces = ArrayList<Surface>(2)
-            outputSurfaces.add(rdr.surface)
-            outputSurfaces.add(Surface(textureView?.surfaceTexture))
-
-            capReqBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            capReqBuilder?.addTarget(rdr.surface)
-            capReqBuilder?.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-
+            if (cameraDevice == null) return
             val rot = windowManager.defaultDisplay.rotation
-            capReqBuilder?.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS[rot])
 
-            if (checkStoragePermissions()) {
-                setupFile()
-            } else {
-                requestStoragePermissions()
+            val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = mgr.getCameraCharacteristics(cameraId!!)
+            val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
+
+            val capBuilder = cameraDevice?.createCaptureRequest(
+                    CameraDevice.TEMPLATE_STILL_CAPTURE)?.apply {
+                addTarget(reader?.surface)
+                set(CaptureRequest.JPEG_ORIENTATION, (ORIENTATIONS[rot] + sensorRot + 270) % 360)
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             }
 
-            rdr.setOnImageAvailableListener({_: ImageReader? ->
-                var img: Image?
-                try {
-                    img = rdr.acquireLatestImage()
-                    val buff = img?.planes?.get(0)?.buffer
-                    val bytes = byteArrayOf(buff?.capacity()?.toByte()!!)
-                    buff[bytes]
-
-                    var os: OutputStream? = null
-                    try {
-                        os = FileOutputStream(file)
-                        os.write(bytes)
-                    } finally {
-                        if (img != null) img.close()
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            val capCall = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
+                    unlockFocus()
                 }
-            }, backgroundHandler)
+            }
 
-            cameraDevice?.createCaptureSession(outputSurfaces, object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(p0: CameraCaptureSession?) {
-                    try {
-                        p0?.capture(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
-                            override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
-                                super.onCaptureCompleted(session, request, result)
-                                createCameraPreview()
-                            }
-                        }, backgroundHandler)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-
-                override fun onConfigureFailed(p0: CameraCaptureSession?) {
-                    Log.e(TAG, "Camera config failed")
-                }
-            }, backgroundHandler)
+            mCameraCaptureSession?.apply {
+                stopRepeating()
+                abortCaptures()
+                capture(capBuilder?.build(), capCall, null)
+            }
         } catch (e: CameraAccessException) {
             e.printStackTrace()
         }
@@ -409,70 +400,32 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private fun createCameraPreview() {
         try {
-            val texture = textureView?.surfaceTexture!!
-            texture.setDefaultBufferSize(previewSize?.width!!, previewSize?.height!!)
-            val newSurface = Surface(texture)
-            capReqBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            capReqBuilder?.addTarget(newSurface)
+            val texture = textureView?.surfaceTexture
+            texture?.setDefaultBufferSize(previewSize?.width!!, previewSize?.height!!)
+            val surf = Surface(texture)
 
-            cameraDevice?.createCaptureSession(listOf(newSurface, reader?.surface), object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(p0: CameraCaptureSession?) {
-                    if (cameraDevice == null) return
-                    mCameraCaptureSession = p0!!
-                    try {
-                        capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                        capReq = capReqBuilder?.build()
-                        mCameraCaptureSession?.setRepeatingRequest(capReq, object : CameraCaptureSession.CaptureCallback() {
-                            fun process(result: CaptureResult) {
-                                when (state) {
-                                    STATE_PREVIEW -> return
-                                    STATE_WAITING_LOCK -> {
-                                        val afState = result[CaptureResult.CONTROL_AE_STATE]
-                                        if (afState == null) {
-                                            takePicture()
-                                        } else if (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) {
-                                            val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                                            if (aeState == null || aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
-                                                state = STATE_PICTURE_TAKEN
-                                                takePicture()
-                                            } else {
-                                                runPrecapture()
-                                            }
-                                        }
-                                    }
-                                    STATE_WAITING_PRECAPTURE -> {
-                                        val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                                        if (aeState == null || aeState == CaptureResult.CONTROL_AE_STATE_PRECAPTURE
-                                                || aeState == CaptureRequest.CONTROL_AE_STATE_FLASH_REQUIRED) state = STATE_WAITING_NON_PRECAPTURE
-                                    }
-                                    STATE_WAITING_NON_PRECAPTURE -> {
-                                        val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                                        if (aeState == null || aeState != CaptureResult.CONTROL_AE_STATE_PRECAPTURE) {
-                                            state = STATE_PICTURE_TAKEN
-                                            takePicture()
-                                        }
-                                    }
-                                }
+            capReqBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            capReqBuilder?.addTarget(surf)
+
+            cameraDevice?.createCaptureSession(Arrays.asList(surf, reader?.surface),
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            if (cameraDevice == null) return
+                            mCameraCaptureSession = session
+                            try {
+                                capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                capReq = capReqBuilder?.build()
+                                mCameraCaptureSession?.setRepeatingRequest(capReq, captureCallback, backgroundHandler)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
                             }
+                        }
 
-                            override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
-                                process(partialResult)
-                            }
-
-                            override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
-                                process(result)
-                            }
-                        }, backgroundHandler)
-                    } catch (e: CameraAccessException) {
-                        e.printStackTrace()
-                    }
-                }
-
-                override fun onConfigureFailed(p0: CameraCaptureSession) {
-                    Log.e(TAG, "Configure failed")
-                }
-            }, null)
-        } catch (e: CameraAccessException) {
+                        override fun onConfigureFailed(p0: CameraCaptureSession?) {
+                            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+                        }
+                    }, null)
+        } catch (e: Exception) {
             e.printStackTrace()
         }
     }
@@ -527,14 +480,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         }
     }
 
-    private fun updatePreview() {
-        if (cameraDevice == null) {
-            return
-        }
-
-        capReqBuilder?.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+    private fun unlockFocus() {
         try {
-            mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), null, backgroundHandler)
+            capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+            mCameraCaptureSession?.capture(capReqBuilder?.build(), captureCallback, backgroundHandler)
+            state = STATE_PREVIEW
+            mCameraCaptureSession?.setRepeatingRequest(capReq, captureCallback, backgroundHandler)
         } catch (e: CameraAccessException) {
             e.printStackTrace()
         }
@@ -544,49 +495,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         try {
             capReqBuilder?.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
             state = STATE_WAITING_PRECAPTURE
-            mCameraCaptureSession?.capture(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
-                fun process(result: CaptureResult) {
-                    when (state) {
-                        STATE_PREVIEW -> return
-                        STATE_WAITING_LOCK -> {
-                            val afState = result[CaptureResult.CONTROL_AE_STATE]
-                            if (afState == null) {
-                                takePicture()
-                            } else if (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) {
-                                val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                                if (aeState == null || aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
-                                    state = STATE_PICTURE_TAKEN
-                                    takePicture()
-                                } else {
-                                    runPrecapture()
-                                }
-                            }
-                        }
-                        STATE_WAITING_PRECAPTURE -> {
-                            val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                            if (aeState == null || aeState == CaptureResult.CONTROL_AE_STATE_PRECAPTURE
-                                    || aeState == CaptureRequest.CONTROL_AE_STATE_FLASH_REQUIRED) state = STATE_WAITING_NON_PRECAPTURE
-                        }
-                        STATE_WAITING_NON_PRECAPTURE -> {
-                            val aeState = result[CaptureResult.CONTROL_AE_STATE]
-                            if (aeState == null || aeState != CaptureResult.CONTROL_AE_STATE_PRECAPTURE) {
-                                state = STATE_PICTURE_TAKEN
-                                takePicture()
-                            }
-                        }
-                    }
-                }
-
-                override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
-                    process(partialResult)
-                }
-
-                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
-                    process(result)
-                }
-
-
-            }, backgroundHandler)
+            mCameraCaptureSession?.capture(capReqBuilder?.build(), captureCallback, backgroundHandler)
         } catch (e: CameraAccessException) {
             e.printStackTrace()
         }
@@ -633,54 +542,57 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         try {
             cameraId = mgr.cameraIdList[camPos]
             val chars = mgr.getCameraCharacteristics(cameraId)
-            val configMap = chars[CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP]
-
-            val largestSize = Collections.max(configMap.getOutputSizes(ImageFormat.JPEG).toList(), { lhs, rhs -> compareSizesByArea(lhs, rhs) })
-            reader = ImageReader.newInstance(largestSize.width, largestSize.height, ImageFormat.JPEG, 2)
-            reader?.setOnImageAvailableListener({ reader ->
-                backgroundHandler?.post(ImageSaver(reader.acquireNextImage(), file))
-            }, backgroundHandler)
+            val charMap = chars[CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP]
+            val largest = Collections.max(
+                    Arrays.asList(*charMap.getOutputSizes(ImageFormat.JPEG)),
+                    { lhs, rhs -> compareSizesByArea(lhs, rhs) })
+            reader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2).apply {
+                setOnImageAvailableListener({ backgroundHandler?.post(ImageSaver(it.acquireNextImage(), file)) }, backgroundHandler)
+            }
 
             val dispRot = windowManager.defaultDisplay.rotation
             val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
-            var areDimensionsSwapped = false
-            when (dispRot) {
-/*                Surface.ROTATION_0 or Surface.ROTATION_180 -> if (sensorRot == 90 || sensorRot == 270) areDimensionsSwapped = true
-                Surface.ROTATION_90 or Surface.ROTATION_270 -> if (sensorRot == 0 || sensorRot == 180) areDimensionsSwapped = true*/
-                Surface.ROTATION_0 -> if (sensorRot == 90 || sensorRot == 270) areDimensionsSwapped = true
-                else -> Log.e(TAG, "Display rotation $dispRot is invalid")
-            }
+            val swappedDimens = areDimensionsSwapped(dispRot, sensorRot)
 
             val dispSize = Point()
             windowManager.defaultDisplay.getSize(dispSize)
-            var rotatedPrevWidth = width
-            var rotatedPrevHeight = height
-            var maxPrevWidth = dispSize.x
-            var maxPrevHeight = dispSize.y
+            val rotPrevW = if (swappedDimens) height else width
+            val rotPrevH = if (swappedDimens) width else height
+            var maxPrevW = if (swappedDimens) dispSize.y else dispSize.x
+            var maxPrevH = if (swappedDimens) dispSize.x else dispSize.y
 
-            if (areDimensionsSwapped) {
-                rotatedPrevWidth = height
-                rotatedPrevHeight = width
-                maxPrevWidth = dispSize.y
-                maxPrevHeight = dispSize.x
+            if (maxPrevW > 1080) maxPrevW = 1080
+
+            if (maxPrevH > 1920) maxPrevH = 1920
+
+            previewSize = chooseOptimalSize(charMap.getOutputSizes(SurfaceTexture::class.java), rotPrevW!!, rotPrevH!!, maxPrevW, maxPrevH, largest)
+
+            if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                textureView?.setAspectRatio(previewSize?.width!!, previewSize?.height!!)
+            } else {
+                textureView?.setAspectRatio(previewSize?.height!!, previewSize?.width!!)
             }
-
-            if (maxPrevWidth > 1440) {
-                maxPrevWidth = 1440
-            }
-
-            if (maxPrevHeight > 2880) {
-                maxPrevHeight = 2880
-            }
-
-            previewSize = chooseOptimalSize(configMap.getOutputSizes(SurfaceTexture::class.java), rotatedPrevWidth!!, rotatedPrevHeight!!, maxPrevWidth, maxPrevHeight, largestSize)
-
-            val rot = resources.configuration.orientation
-            if (rot == Configuration.ORIENTATION_LANDSCAPE) textureView?.setAspectRatio(previewSize?.width!!, previewSize?.height!!) else textureView?.setAspectRatio(previewSize?.height!!, previewSize?.width!!)
-
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun areDimensionsSwapped(dispRot: Int, sensorRot: Int): Boolean {
+        var dimensAreSwapped = false
+
+        when (dispRot) {
+            Surface.ROTATION_0, Surface.ROTATION_180 -> {
+                if (sensorRot == 90 || sensorRot == 180) dimensAreSwapped = true
+            }
+
+            Surface.ROTATION_90, Surface.ROTATION_270 -> {
+                if (sensorRot == 0 || sensorRot == 180) dimensAreSwapped = true
+            }
+
+            else -> Log.e(TAG, "Invalid display rotation")
+        }
+
+        return dimensAreSwapped
     }
 
     private fun configTransform(width: Float?, height: Float?) {
