@@ -118,6 +118,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         val STATE_WAITING_NON_PRECAPTURE = 3
         val STATE_PICTURE_TAKEN = 4
 
+        init {
+            ORIENTATIONS.append(Surface.ROTATION_0, 90)
+            ORIENTATIONS.append(Surface.ROTATION_90, 0)
+            ORIENTATIONS.append(Surface.ROTATION_180, 270)
+            ORIENTATIONS.append(Surface.ROTATION_270, 180)
+        }
+
         private class ImageSaver(val image: Image, val file: File) : Runnable {
             override fun run() {
                 val buffer = image.planes[0].buffer
@@ -542,8 +549,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
             val swappedDimens = areDimensionsSwapped(dispRot, sensorRot)
 
-            debugLog(TAG, "Diments are swapped: $swappedDimens")
-
             val dispSize = Point()
             windowManager.defaultDisplay.getSize(dispSize)
             val rotPrevW = if (swappedDimens) height else width
@@ -570,7 +575,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private fun areDimensionsSwapped(dispRot: Int, sensorRot: Int): Boolean {
         var dimensAreSwapped = false
-        debugLog(TAG, "Display rotation is $dispRot\nSensor rotation is $sensorRot")
 
         when (dispRot) {
             Surface.ROTATION_0, Surface.ROTATION_180 -> {
@@ -624,7 +628,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         val mm = c[Calendar.MINUTE]
         val h = c[Calendar.HOUR_OF_DAY]
 
-        return File("${Environment.getExternalStorageDirectory()}/$y$m$d$h$mm$s.jpg")
+        return File("${Environment.getExternalStorageDirectory()}/G6Camera/$y$m$d$h$mm$s.jpg")
     }
 
     private fun closeCamera() {
@@ -650,19 +654,4 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             cameraOpenCloseLock.release()
         }
     }
-
-
- /*   *//**
-     * A native method that is implemented by the 'native-lib' native library,
-     * which is packaged with this application.
-     *//*
-    external fun stringFromJNI(): String
-
-    companion object {
-
-        // Used to load the 'native-lib' library on application startup.
-        init {
-            System.loadLibrary("native-lib")
-        }
-    }*/
 }
