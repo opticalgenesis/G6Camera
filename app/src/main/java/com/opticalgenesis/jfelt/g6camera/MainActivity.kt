@@ -52,6 +52,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private var state = STATE_PREVIEW
 
+    private var isInManualFocus = false
+
     private val cameraOpenCloseLock = Semaphore(1)
 
     companion object {
@@ -141,8 +143,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     }
 
     override fun onPause() {
-        haltBackgroundThread()
         closeCamera()
+        haltBackgroundThread()
         super.onPause()
     }
 
@@ -186,6 +188,89 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             }
         }
     }
+/*
+    override fun onTouch(v: View, event: MotionEvent): Boolean {
+        debugLog(TAG, "ViewTouched")
+        val actionMasked = event.actionMasked
+        if (actionMasked != MotionEvent.ACTION_DOWN) return false
+        if (isInManualFocus) return true
+
+        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val chars = mgr.getCameraCharacteristics(cameraId!!)
+        val sensorArraySizes = chars[CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE]
+
+        var isSwapped = false
+        val dispRot = windowManager.defaultDisplay.rotation
+        val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
+
+        val x: Int
+        val y: Int
+
+        when (dispRot) {
+            Surface.ROTATION_0 -> if (sensorRot == 90 || sensorRot == 270) isSwapped = true
+            Surface.ROTATION_180 -> if (sensorRot == 90 || sensorRot == 270) isSwapped = true
+            Surface.ROTATION_90 -> if (sensorRot == 0 || sensorRot == 180) isSwapped = true
+            Surface.ROTATION_270 -> if (sensorRot == 0 || sensorRot == 180) isSwapped = true
+        }
+
+        if (isSwapped) {
+            y = (event.x / v.width * sensorArraySizes.height()).toInt()
+            x = (event.y / v.height * sensorArraySizes.width()).toInt()
+        } else {
+            y = (event.y / v.height * sensorArraySizes.width()).toInt()
+            x = (event.x / v.width * sensorArraySizes.height()).toInt()
+        }
+
+        val focusArea = MeteringRectangle(Math.max(x - 150, 0), Math.max(y - 150, 0), 300, 300, MeteringRectangle.METERING_WEIGHT_MAX - 1)
+
+        mCameraCaptureSession?.stopRepeating()
+
+        capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+        capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+        mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
+                super.onCaptureCompleted(session, request, result)
+                isInManualFocus = false
+                if (request?.tag == "FOCUS_TAG") {
+                    capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, null)
+                    mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), null, null)
+                }
+            }
+
+            override fun onCaptureFailed(session: CameraCaptureSession?, request: CaptureRequest?, failure: CaptureFailure?) {
+                super.onCaptureFailed(session, request, failure)
+                Log.e(TAG, "Error in manual AF")
+                isInManualFocus = false
+            }
+        }, backgroundHandler)
+
+        capReqBuilder?.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(focusArea))
+
+        capReqBuilder?.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+        capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+        capReqBuilder?.setTag("FOCUS_TAG")
+
+        mCameraCaptureSession?.capture(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
+                super.onCaptureCompleted(session, request, result)
+                isInManualFocus = false
+                if (request?.tag == "FOCUS_TAG") {
+                    capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, null)
+                    mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), null, null)
+                }
+            }
+
+            override fun onCaptureFailed(session: CameraCaptureSession?, request: CaptureRequest?, failure: CaptureFailure?) {
+                super.onCaptureFailed(session, request, failure)
+                Log.e(TAG, "Error in manual AF")
+                isInManualFocus = false
+            }
+        }, backgroundHandler)
+
+        isInManualFocus = true
+        return true
+    }*/
 
     private fun initOrientations() {
         ORIENTATIONS.append(Surface.ROTATION_0, 90)
@@ -507,38 +592,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         }
     }
 
-    // TODO -- 2017/11/29 -- Add method to switch selected camera
-    // possibly by passing an Integer to this method
     private fun openCamera(camPos: Int, width: Int?, height: Int?) {
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-/*        try {
-            cameraId = mgr.cameraIdList[camPos]
-            debugLog(TAG, "Opening camera $camPos")
-            val chars: CameraCharacteristics? = mgr.getCameraCharacteristics(cameraId)
-            val configMap = chars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-            imageSize = configMap.getOutputSizes(SurfaceTexture::class.java)[0]
-            try {
-                mgr.openCamera(cameraId, object : CameraDevice.StateCallback(){
-                    override fun onOpened(p0: CameraDevice?) {
-                        cameraDevice = p0
-                        createCameraPreview()
-                    }
-
-                    override fun onError(p0: CameraDevice?, p1: Int) {
-                        cameraDevice?.close()
-                    }
-
-                    override fun onDisconnected(p0: CameraDevice?) {
-                        cameraDevice?.close()
-                        cameraDevice = null
-                    }
-                }, null)
-            } catch (e: SecurityException) {
-                e.printStackTrace()
-            }
-        } catch (e: CameraAccessException) {
-            e.printStackTrace()
-        }*/
         initOutputs(camPos, width, height)
         configTransform(width?.toFloat(), height?.toFloat())
         try {
