@@ -22,9 +22,11 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.widget.Button
+import android.widget.Toast
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.lang.Long.signum
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -34,9 +36,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private val permissionRequestCode = 420
     private val storageRequestCode = 350
-
-    private var file = File("${Environment.getExternalStorageDirectory()}/pic.jpg")
-    private lateinit var imageSize: Size
 
     private var mCameraCaptureSession: CameraCaptureSession? = null
     private var backgroundHandler: Handler? = null
@@ -51,9 +50,28 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private var state = STATE_PREVIEW
 
-    private var isInManualFocus = false
+//    private var isInManualFocus = false
 
     private val cameraOpenCloseLock = Semaphore(1)
+
+    private val stateCallback = object : CameraDevice.StateCallback() {
+        override fun onOpened(cd: CameraDevice) {
+            cameraOpenCloseLock.release()
+            this@MainActivity.cameraDevice = cd
+            createCameraPreview()
+        }
+
+        override fun onDisconnected(cd: CameraDevice) {
+            cameraOpenCloseLock.release()
+            cameraDevice?.close()
+            this@MainActivity.cameraDevice = null
+        }
+
+        override fun onError(cd: CameraDevice, err: Int) {
+            onDisconnected(cd)
+            throw RuntimeException("Error opening camera")
+        }
+    }
 
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
@@ -103,20 +121,19 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         private class ImageSaver(val image: Image, val file: File) : Runnable {
             override fun run() {
                 val buffer = image.planes[0].buffer
-                val bytes = byteArrayOf(buffer.remaining().toByte())
+                val bytes = ByteArray(buffer.remaining())
                 buffer[bytes]
                 var outputStream: FileOutputStream? = null
                 try {
-                    outputStream = FileOutputStream(file)
-                    outputStream.write(bytes)
+                    outputStream = FileOutputStream(file).apply { write(bytes) }
                 } catch (e: IOException) {
                     e.printStackTrace()
                 } finally {
                     image.close()
-                    if (outputStream != null) {
+                    outputStream?.let {
                         try {
-                            outputStream.close()
-                        } catch (e: IOException) {
+                            it.close()
+                        } catch (e: Exception) {
                             e.printStackTrace()
                         }
                     }
@@ -124,7 +141,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             }
         }
 
-        private fun compareSizesByArea(lhs: Size, rhs: Size) = signum((lhs.width.toLong() * lhs.height.toLong()) - (rhs.width.toLong() * rhs.height.toLong()))
+        private fun compareSizesByArea(lhs: Size, rhs: Size) = signum(lhs.width.toLong() * lhs.height - rhs.width.toLong() * rhs.height)
 
         fun chooseOptimalSize(sizes: Array<Size>, textureViewWidth: Int, textureViewHeight: Int,
                               maxWidth: Int, maxHeight: Int, aspectRatio: Size): Size {
@@ -148,15 +165,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         initCameraLayout()
-
-        if (checkPermissions()) {
-            initOrientations()
-        } else {
-            requestPermissions()
-        }
-
-/*        // Example of a call to a native method
-        sample_text.text = stringFromJNI()*/
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -344,9 +352,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         rearCamButton.setOnClickListener(this)
         rearWideCamButton.setOnClickListener(this)
 
-        frontCamButton.setOnLongClickListener({ takePicture(); true })
-        rearCamButton.setOnLongClickListener({ takePicture(); true })
-        rearWideCamButton.setOnLongClickListener({ takePicture(); true })
+        frontCamButton.setOnLongClickListener({ lockFocus(); true })
+        rearCamButton.setOnLongClickListener({ lockFocus(); true })
+        rearWideCamButton.setOnLongClickListener({ lockFocus(); true })
     }
 
     private fun initBackgroundThread() {
@@ -393,6 +401,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
                 abortCaptures()
                 capture(capBuilder?.build(), capCall, null)
             }
+
+            Toast.makeText(this, "Picture taken", Toast.LENGTH_SHORT).show()
         } catch (e: CameraAccessException) {
             e.printStackTrace()
         }
@@ -502,37 +512,15 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     }
 
     private fun openCamera(camPos: Int, width: Int?, height: Int?) {
-        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         initOutputs(camPos, width, height)
         configTransform(width?.toFloat(), height?.toFloat())
+        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         try {
-            if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) throw RuntimeException("Camera access timed out")
-            try {
-                mgr.openCamera(cameraId, object : CameraDevice.StateCallback() {
-                    override fun onOpened(p0: CameraDevice?) {
-                        cameraOpenCloseLock.release()
-                        cameraDevice = p0
-                        createCameraPreview()
-                    }
-
-                    override fun onError(p0: CameraDevice?, p1: Int) {
-                        Log.e(TAG, "Camera device ${p0?.id} threw an error")
-                        cameraOpenCloseLock.release()
-                        p0?.close()
-                        cameraDevice = null
-                    }
-
-                    override fun onDisconnected(p0: CameraDevice?) {
-                        debugLog(TAG, "Camera ${p0?.id} disconnected")
-                        cameraOpenCloseLock.release()
-                        p0?.close()
-                        cameraDevice = null
-                    }
-                }, backgroundHandler)
-            } catch (e: SecurityException) {
-                e.printStackTrace()
-            }
-        } catch (e: Exception) {
+            if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) throw RuntimeException("Time out opening camera")
+            mgr.openCamera(cameraId, stateCallback, backgroundHandler)
+        } catch (e: CameraAccessException) {
+            e.printStackTrace()
+        } catch (e: SecurityException) {
             e.printStackTrace()
         }
     }
@@ -547,12 +535,14 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
                     Arrays.asList(*charMap.getOutputSizes(ImageFormat.JPEG)),
                     { lhs, rhs -> compareSizesByArea(lhs, rhs) })
             reader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2).apply {
-                setOnImageAvailableListener({ backgroundHandler?.post(ImageSaver(it.acquireNextImage(), file)) }, backgroundHandler)
+                setOnImageAvailableListener({ backgroundHandler?.post(ImageSaver(it.acquireNextImage(), setupFile())) }, backgroundHandler)
             }
 
             val dispRot = windowManager.defaultDisplay.rotation
             val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
             val swappedDimens = areDimensionsSwapped(dispRot, sensorRot)
+
+            debugLog(TAG, "Diments are swapped: $swappedDimens")
 
             val dispSize = Point()
             windowManager.defaultDisplay.getSize(dispSize)
@@ -566,6 +556,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             if (maxPrevH > 1920) maxPrevH = 1920
 
             previewSize = chooseOptimalSize(charMap.getOutputSizes(SurfaceTexture::class.java), rotPrevW!!, rotPrevH!!, maxPrevW, maxPrevH, largest)
+            debugLog(TAG, "Optimal width is ${previewSize?.width}\nOptimal height is ${previewSize?.height}")
 
             if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
                 textureView?.setAspectRatio(previewSize?.width!!, previewSize?.height!!)
@@ -579,10 +570,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private fun areDimensionsSwapped(dispRot: Int, sensorRot: Int): Boolean {
         var dimensAreSwapped = false
+        debugLog(TAG, "Display rotation is $dispRot\nSensor rotation is $sensorRot")
 
         when (dispRot) {
             Surface.ROTATION_0, Surface.ROTATION_180 -> {
-                if (sensorRot == 90 || sensorRot == 180) dimensAreSwapped = true
+                if (sensorRot == 90 || sensorRot == 270) dimensAreSwapped = true
             }
 
             Surface.ROTATION_90, Surface.ROTATION_270 -> {
@@ -623,8 +615,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     private fun requestStoragePermissions() =
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission_group.STORAGE), storageRequestCode)
 
-    private fun setupFile() {
-        file = File("${Environment.getExternalStorageDirectory()}/pic.jpg")
+    private fun setupFile(): File {
+        val c = Calendar.getInstance()
+        val y = c[Calendar.YEAR]
+        val m = c[Calendar.MONTH]
+        val d = c[Calendar.DAY_OF_MONTH]
+        val s = c[Calendar.SECOND]
+        val mm = c[Calendar.MINUTE]
+        val h = c[Calendar.HOUR_OF_DAY]
+
+        return File("${Environment.getExternalStorageDirectory()}/$y$m$d$h$mm$s.jpg")
     }
 
     private fun closeCamera() {
