@@ -1,6 +1,7 @@
 package com.opticalgenesis.jfelt.g6camera
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -12,6 +13,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
+import android.provider.MediaStore
 import android.support.v4.app.ActivityCompat
 import android.support.v4.content.ContextCompat
 import android.support.v7.app.AppCompatActivity
@@ -27,6 +29,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.lang.Long.signum
+import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -53,6 +56,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 //    private var isInManualFocus = false
 
     private val cameraOpenCloseLock = Semaphore(1)
+
+    private lateinit var file: File
 
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(cd: CameraDevice) {
@@ -184,6 +189,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     override fun onResume() {
         super.onResume()
         initBackgroundThread()
+        if (textureView == null) initCameraLayout()
         if (textureView?.isAvailable!!) {
             openCamera(0, textureView?.width!!, textureView?.height!!)
         } else {
@@ -238,90 +244,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         }
     }
 
-/*
-    override fun onTouch(v: View, event: MotionEvent): Boolean {
-        debugLog(TAG, "ViewTouched")
-        val actionMasked = event.actionMasked
-        if (actionMasked != MotionEvent.ACTION_DOWN) return false
-        if (isInManualFocus) return true
-
-        val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val chars = mgr.getCameraCharacteristics(cameraId!!)
-        val sensorArraySizes = chars[CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE]
-
-        var isSwapped = false
-        val dispRot = windowManager.defaultDisplay.rotation
-        val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
-
-        val x: Int
-        val y: Int
-
-        when (dispRot) {
-            Surface.ROTATION_0 -> if (sensorRot == 90 || sensorRot == 270) isSwapped = true
-            Surface.ROTATION_180 -> if (sensorRot == 90 || sensorRot == 270) isSwapped = true
-            Surface.ROTATION_90 -> if (sensorRot == 0 || sensorRot == 180) isSwapped = true
-            Surface.ROTATION_270 -> if (sensorRot == 0 || sensorRot == 180) isSwapped = true
-        }
-
-        if (isSwapped) {
-            y = (event.x / v.width * sensorArraySizes.height()).toInt()
-            x = (event.y / v.height * sensorArraySizes.width()).toInt()
-        } else {
-            y = (event.y / v.height * sensorArraySizes.width()).toInt()
-            x = (event.x / v.width * sensorArraySizes.height()).toInt()
-        }
-
-        val focusArea = MeteringRectangle(Math.max(x - 150, 0), Math.max(y - 150, 0), 300, 300, MeteringRectangle.METERING_WEIGHT_MAX - 1)
-
-        mCameraCaptureSession?.stopRepeating()
-
-        capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
-        capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-        mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
-                super.onCaptureCompleted(session, request, result)
-                isInManualFocus = false
-                if (request?.tag == "FOCUS_TAG") {
-                    capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, null)
-                    mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), null, null)
-                }
-            }
-
-            override fun onCaptureFailed(session: CameraCaptureSession?, request: CaptureRequest?, failure: CaptureFailure?) {
-                super.onCaptureFailed(session, request, failure)
-                Log.e(TAG, "Error in manual AF")
-                isInManualFocus = false
-            }
-        }, backgroundHandler)
-
-        capReqBuilder?.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(focusArea))
-
-        capReqBuilder?.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        capReqBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-        capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-        capReqBuilder?.setTag("FOCUS_TAG")
-
-        mCameraCaptureSession?.capture(capReqBuilder?.build(), object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(session: CameraCaptureSession?, request: CaptureRequest?, result: TotalCaptureResult?) {
-                super.onCaptureCompleted(session, request, result)
-                isInManualFocus = false
-                if (request?.tag == "FOCUS_TAG") {
-                    capReqBuilder?.set(CaptureRequest.CONTROL_AF_TRIGGER, null)
-                    mCameraCaptureSession?.setRepeatingRequest(capReqBuilder?.build(), null, null)
-                }
-            }
-
-            override fun onCaptureFailed(session: CameraCaptureSession?, request: CaptureRequest?, failure: CaptureFailure?) {
-                super.onCaptureFailed(session, request, failure)
-                Log.e(TAG, "Error in manual AF")
-                isInManualFocus = false
-            }
-        }, backgroundHandler)
-
-        isInManualFocus = true
-        return true
-    }*/
-
     private fun initOrientations() {
         ORIENTATIONS.append(Surface.ROTATION_0, 90)
         ORIENTATIONS.append(Surface.ROTATION_90, 0)
@@ -333,15 +255,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(this, Manifest.permission_group.STORAGE) == PackageManager.PERMISSION_GRANTED
 
     private fun requestPermissions() {
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
+//        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission_group.STORAGE), storageRequestCode)
     }
-
-    /*
-        TODO -- 2017/12/03
-        It would seem that to accomplish "wide-angle" on the front cam, the ratio is simply altered
-        Look into this
-     */
 
     private fun initCameraLayout() {
         textureView = findViewById(R.id.camera_preview)
@@ -530,7 +446,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         } catch (e: SecurityException) {
             e.printStackTrace()
         }
+        requestPermissions()
     }
+
+    // todo 2018/02/21 sort these damn permissions out
 
     private fun initOutputs(camPos: Int, width: Int?, height: Int?) {
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -542,7 +461,30 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
                     Arrays.asList(*charMap.getOutputSizes(ImageFormat.JPEG)),
                     { lhs, rhs -> compareSizesByArea(lhs, rhs) })
             reader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2).apply {
-                setOnImageAvailableListener({ backgroundHandler?.post(ImageSaver(it.acquireNextImage(), setupFile())) }, backgroundHandler)
+                setOnImageAvailableListener({
+                    // todo 2018/02/21 -- refactor this into separate method for readability
+                    val pathId = "${Environment.getExternalStorageDirectory()}/${Environment.DIRECTORY_DCIM}/"
+                    val folderId = File(pathId, "G6Camera")
+                    if (!folderId.exists()) {
+                        if (!folderId.mkdirs()) {
+                            Log.e("ERR", "Failed to create album folder")
+                        } else {
+                            Log.d("SUCC", "Album folder created successfully")
+                        }
+                    }
+
+                    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+                    val imgFile = File(folderId, "$ts.jpg")
+
+                    val cv = ContentValues()
+                    cv.put(MediaStore.Images.Media.TITLE, "$ts.jpg")
+                    cv.put(MediaStore.Images.Media.DATE_TAKEN, System.currentTimeMillis())
+                    cv.put(MediaStore.Images.Media.ORIENTATION, 0) // not accurate
+                    cv.put(MediaStore.Images.Media.CONTENT_TYPE, "image/jpeg")
+                    cv.put("_data", imgFile.absolutePath)
+                    contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv)
+                    backgroundHandler?.post(ImageSaver(it.acquireNextImage(), imgFile))
+                }, backgroundHandler)
             }
 
             val dispRot = windowManager.defaultDisplay.rotation
@@ -613,22 +555,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         textureView?.setTransform(matrix)
     }
 
-    private fun checkStoragePermissions() =
-            ContextCompat.checkSelfPermission(this, Manifest.permission_group.STORAGE) == PackageManager.PERMISSION_GRANTED
-
-    private fun requestStoragePermissions() =
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission_group.STORAGE), storageRequestCode)
-
-    private fun setupFile(): File {
-        val c = Calendar.getInstance()
-        val y = c[Calendar.YEAR]
-        val m = c[Calendar.MONTH]
-        val d = c[Calendar.DAY_OF_MONTH]
-        val s = c[Calendar.SECOND]
-        val mm = c[Calendar.MINUTE]
-        val h = c[Calendar.HOUR_OF_DAY]
-
-        return File("${Environment.getExternalStorageDirectory()}/G6Camera/$y$m$d$h$mm$s.jpg")
+    private fun setupFile() {
     }
 
     private fun closeCamera() {
