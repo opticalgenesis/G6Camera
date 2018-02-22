@@ -24,6 +24,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.widget.Button
+import android.widget.SeekBar
 import android.widget.Toast
 import java.io.File
 import java.io.FileOutputStream
@@ -35,9 +36,11 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import kotlin.collections.ArrayList
 
-class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, View.OnClickListener {
+class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, View.OnClickListener, View.OnLongClickListener {
 
-    private val permissionRequestCode = 420
+    // todo 2018/02/22 store cameraPos as shared pref to enable going back to same cam view after capturing image
+
+    private val cameraRequestCode = 420
     private val storageRequestCode = 350
 
     private var mCameraCaptureSession: CameraCaptureSession? = null
@@ -52,6 +55,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     private var capReq: CaptureRequest? = null
 
     private var state = STATE_PREVIEW
+    private var cameraPosition: Int = 1
+    private var exposure: Float = 0.0f
 
 //    private var isInManualFocus = false
 
@@ -176,13 +181,33 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        initCameraLayout()
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        cameraPosition = prefs.getInt("CameraPosition", 1)
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestCameraPermission()
+        } else {
+            initCameraLayout()
+        }
+    }
+
+    override fun onLongClick(v: View?): Boolean {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission_group.STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestStoragePermissions()
+            lockFocus()
+            Toast.makeText(this, "Picture taken", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    private fun requestCameraPermission() = ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.CAMERA), cameraRequestCode)
+
+    private fun requestStoragePermissions() {
+        ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), storageRequestCode)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         when (requestCode) {
-            permissionRequestCode -> initOrientations()
-            storageRequestCode -> setupFile()
+            cameraRequestCode -> initOrientations()
         }
     }
 
@@ -191,13 +216,14 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         initBackgroundThread()
         if (textureView == null) initCameraLayout()
         if (textureView?.isAvailable!!) {
-            openCamera(0, textureView?.width!!, textureView?.height!!)
+            openCamera(cameraPosition, textureView?.width!!, textureView?.height!!)
         } else {
             textureView?.surfaceTextureListener = this
         }
     }
 
     override fun onPause() {
+        saveCameraPosition()
         closeCamera()
         haltBackgroundThread()
         super.onPause()
@@ -205,13 +231,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
 
     override fun onSurfaceTextureAvailable(p0: SurfaceTexture?, p1: Int, p2: Int) {
-        openCamera(0, p1, p2)
+        openCamera(cameraPosition, p1, p2)
     }
 
     override fun onSurfaceTextureSizeChanged(p0: SurfaceTexture?, p1: Int, p2: Int) {
         if (cameraDevice != null) {
             closeCamera()
-            openCamera(0, p1, p2)
+            openCamera(cameraPosition, p1, p2)
         }
     }
 
@@ -239,9 +265,19 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             }
             else -> {
                 closeCamera()
-                openCamera(0, w, h)
+                openCamera(cameraPosition, w, h)
             }
         }
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        debugLog("RESTART", "Activity completely restarted")
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle?) {
+        super.onRestoreInstanceState(savedInstanceState)
+        debugLog("RESTART", "Instance state restored")
     }
 
     private fun initOrientations() {
@@ -253,11 +289,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
 
     private fun checkPermissions() =
             ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(this, Manifest.permission_group.STORAGE) == PackageManager.PERMISSION_GRANTED
-
-    private fun requestPermissions() {
-//        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), permissionRequestCode)
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission_group.STORAGE), storageRequestCode)
-    }
 
     private fun initCameraLayout() {
         textureView = findViewById(R.id.camera_preview)
@@ -271,13 +302,26 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         val rearCamButton = findViewById<Button>(R.id.debug_cam_switch_rear)
         val rearWideCamButton = findViewById<Button>(R.id.debug_cam_switch_rear_wide)
 
-        frontCamButton.setOnClickListener(this)
-        rearCamButton.setOnClickListener(this)
-        rearWideCamButton.setOnClickListener(this)
+        val exposureBar = findViewById<SeekBar>(R.id.exposure_bar)
 
-        frontCamButton.setOnLongClickListener({ lockFocus(); true })
-        rearCamButton.setOnLongClickListener({ lockFocus(); true })
-        rearWideCamButton.setOnLongClickListener({ lockFocus(); true })
+        exposureBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                exposure = (progress / 100).toFloat()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        frontCamButton.setOnClickListener(this)
+        frontCamButton.setOnLongClickListener(this)
+
+        rearCamButton.setOnClickListener(this)
+        rearCamButton.setOnLongClickListener(this)
+
+        rearWideCamButton.setOnClickListener(this)
+        rearWideCamButton.setOnLongClickListener(this)
     }
 
     private fun initBackgroundThread() {
@@ -301,16 +345,18 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         try {
             if (cameraDevice == null) return
             val rot = windowManager.defaultDisplay.rotation
-
             val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val chars = mgr.getCameraCharacteristics(cameraId!!)
+            val expRange = chars[CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE]
+            val actualExp = expRange.lower + ((expRange.upper - expRange.lower) * exposure)
+            debugLog("ACT_EXP", "Lower: ${expRange.lower}\nUpper: ${expRange.upper}\nModified: $actualExp\nExposure modifier: $exposure")
             val sensorRot = chars[CameraCharacteristics.SENSOR_ORIENTATION]
-
             val capBuilder = cameraDevice?.createCaptureRequest(
                     CameraDevice.TEMPLATE_STILL_CAPTURE)?.apply {
                 addTarget(reader?.surface)
                 set(CaptureRequest.JPEG_ORIENTATION, (ORIENTATIONS[rot] + sensorRot + 270) % 360)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
             }
 
             val capCall = object : CameraCaptureSession.CaptureCallback() {
@@ -329,6 +375,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         } catch (e: CameraAccessException) {
             e.printStackTrace()
         }
+    }
+
+    private fun saveCameraPosition() {
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        editor.putInt("CameraPosition", cameraPosition).apply()
     }
 
     private fun createCameraPreview() {
@@ -355,7 +407,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
                         }
 
                         override fun onConfigureFailed(p0: CameraCaptureSession?) {
-                            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+                            error("Camera configure failed")
                         }
                     }, null)
         } catch (e: Exception) {
@@ -435,6 +487,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
     }
 
     private fun openCamera(camPos: Int, width: Int?, height: Int?) {
+        cameraPosition = camPos
         initOutputs(camPos, width, height)
         configTransform(width?.toFloat(), height?.toFloat())
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -446,10 +499,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
         } catch (e: SecurityException) {
             e.printStackTrace()
         }
-        requestPermissions()
     }
-
-    // todo 2018/02/21 sort these damn permissions out
 
     private fun initOutputs(camPos: Int, width: Int?, height: Int?) {
         val mgr = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -457,6 +507,15 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             cameraId = mgr.cameraIdList[camPos]
             val chars = mgr.getCameraCharacteristics(cameraId)
             val charMap = chars[CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP]
+            // getting fps for video
+/*            if (CamcorderProfile.hasProfile(cameraId?.toInt()!!, CamcorderProfile.QUALITY_1080P)) {
+                val prof = CamcorderProfile.get(cameraId?.toInt()!!, CamcorderProfile.QUALITY_1080P)
+                debugLog("PROF", prof.videoFrameRate.toString())
+            }*/
+            // checking for available keys
+            chars.availableCaptureRequestKeys.forEach({
+                debugLog("CHAR_KEY", it.name)
+            })
             val largest = Collections.max(
                     Arrays.asList(*charMap.getOutputSizes(ImageFormat.JPEG)),
                     { lhs, rhs -> compareSizesByArea(lhs, rhs) })
@@ -473,7 +532,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
                         }
                     }
 
-                    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+                    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                     val imgFile = File(folderId, "$ts.jpg")
 
                     val cv = ContentValues()
@@ -503,7 +562,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             if (maxPrevH > 1920) maxPrevH = 1920
 
             previewSize = chooseOptimalSize(charMap.getOutputSizes(SurfaceTexture::class.java), rotPrevW!!, rotPrevH!!, maxPrevW, maxPrevH, largest)
-            debugLog(TAG, "Optimal width is ${previewSize?.width}\nOptimal height is ${previewSize?.height}")
 
             if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
                 textureView?.setAspectRatio(previewSize?.width!!, previewSize?.height!!)
@@ -553,9 +611,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener, Vi
             matrix.postRotate(180F, cx, cy)
         } else if (rot == Surface.ROTATION_180) matrix.postRotate(180F, cx, cy)
         textureView?.setTransform(matrix)
-    }
-
-    private fun setupFile() {
     }
 
     private fun closeCamera() {

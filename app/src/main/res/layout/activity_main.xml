@@ -34,6 +34,20 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="rear_wide" />
+
+        <Button
+            android:id="@+id/debug_video"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="video" />
     </LinearLayout>
+
+    <SeekBar
+        android:id="@+id/exposure_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        tools:layout_editor_absoluteX="169dp"
+        tools:layout_editor_absoluteY="279dp" />
 
 </android.support.constraint.ConstraintLayout>
